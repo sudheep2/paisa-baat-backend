@@ -1,53 +1,141 @@
-const { App } = require('@octokit/app');
+// server.js
 const express = require('express');
+const axios = require('axios');
 const cors = require('cors');
 require('dotenv').config();
 
-// Create an instance of Express
 const app = express();
+app.use(cors());
+app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
-// In-memory storage (replace with a database in production)
-const bounties = [];
-const privateKey = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
-
-// Create an instance of Octokit App (renamed to avoid conflict)
-const octokitApp = new App({
-  appId: process.env.GITHUB_APP_ID,
-  privateKey,
-  oauth: {
-    clientId: process.env.GITHUB_CLIENT_ID,
-    clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  },
+app.get('/api/check-auth', (req, res) => {
+  const githubToken = req.cookies.github_token;
+  if (githubToken) {
+    res.status(200).json({ authenticated: true });
+  } else {
+    res.status(401).json({ authenticated: false });
+  }
 });
 
-const GITHUB_APP_NAME="paisa-baat"
-
-
-// Middleware setup
-app.use(express.json());
-app.use(cors());
-
 app.get('/api/github/login', (req, res) => {
-  
-  const githubAuthUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`;
-  
+  const githubAuthUrl = `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new`;
   res.json({ url: githubAuthUrl });
 });
 
 app.get('/api/github/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, installation_id } = req.query;
+
+  if (!code || !installation_id) {
+    return res.status(400).json({ error: 'Invalid code or installation_id provided' });
+  }
+
   try {
-    const { token } = await octokitApp.oauth.createToken({ code });
+    const accessToken = await exchangeCodeForToken(code, installation_id);
     
-    // In a real app, you'd associate this token with the user in your database
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard?token=${token}`);
+    // In a production app, you'd want to store this token securely, possibly in a database
+    // associated with the user's session
+    res.cookie('github_token', accessToken, { 
+      httpOnly: true, 
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 3600000 // 1 hour
+    });
+
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
   } catch (error) {
     console.error('Error in GitHub callback:', error);
     res.status(500).json({ error: 'Failed to authenticate with GitHub' });
   }
 });
+
+app.get('/api/bounties', async (req, res) => {
+  const githubToken = req.cookies.github_token;
+
+  if (!githubToken) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    // Fetch bounties using the GitHub token
+    const bounties = await fetchBountiesForUser(githubToken);
+    res.json(bounties);
+  } catch (error) {
+    console.error('Error fetching bounties:', error);
+    res.status(500).json({ error: 'Failed to fetch bounties' });
+  }
+});
+
+
+const { Octokit } = require('@octokit/rest');
+const jwt = require('jsonwebtoken');
+
+async function exchangeCodeForToken(code, installationId) {
+  try {
+    // Generate a JSON Web Token (JWT) signed with your GitHub App's private key
+    const token = jwt.sign({}, process.env.GITHUB_PRIVATE_KEY, {
+      algorithm: 'RS256',
+      expiresIn: '10m',
+      issuer: process.env.GITHUB_APP_ID
+    });
+
+    // Create an authenticated Octokit instance using the JWT
+    const octokit = new Octokit({
+      auth: token,
+      previews: ['machine-man-preview']
+    });
+
+    // Exchange the code for an access token
+    const { data } = await octokit.apps.createInstallationAccessToken({
+      installation_id: installationId
+    });
+
+    return data.token;
+  } catch (error) {
+    console.error('Error exchanging code for token:', error);
+    throw new Error('Failed to exchange code for token');
+  }
+}
+
+async function fetchBountiesForUser(token) {
+  try {
+    // Create an Octokit instance authenticated with the user's token
+    const octokit = new Octokit({ auth: token });
+
+    // Fetch the authenticated user's information
+    const { data: user } = await octokit.users.getAuthenticated();
+
+    // Fetch issues from repositories where the user has access
+    // and that have a label 'bounty'
+    const { data: issues } = await octokit.issues.listForAuthenticatedUser({
+      filter: 'all',
+      state: 'open',
+      labels: 'bounty'
+    });
+
+    // Transform the issues into bounties
+    const bounties = issues.map(issue => ({
+      id: issue.id,
+      title: issue.title,
+      repoName: issue.repository.full_name,
+      url: issue.html_url,
+      amount: extractBountyAmount(issue.body), // You'll need to implement this function
+      status: 'open' // You might want to add more complex status logic
+    }));
+
+    return bounties;
+  } catch (error) {
+    console.error('Error fetching bounties:', error);
+    throw new Error('Failed to fetch bounties');
+  }
+}
+
+// Helper function to extract bounty amount from issue body
+function extractBountyAmount(body) {
+  // This is a simple implementation. You might want to make it more robust.
+  const match = body.match(/bounty:\s*(\d+)/i);
+  return match ? parseInt(match[1], 10) : 0;
+}
 
 app.post('/api/webhooks/github', async (req, res) => {
   const event = req.headers['x-github-event'];

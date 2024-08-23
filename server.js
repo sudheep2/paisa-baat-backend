@@ -3,14 +3,18 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require("@octokit/auth-app");
-const jwt = require('jsonwebtoken');
+const cookieParser = require("cookie-parser");
 const axios= require('axios');
 const { App } = require('@octokit/app');
 const Webhooks = require("@octokit/webhooks");
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+app.use(cookieParser());
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true
+}));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
@@ -81,6 +85,9 @@ setupDatabase();
 
 // Middleware for authentication
 const authenticateUser = async (req, res, next) => {
+  if(!req.cookies || !req.cookies.user_id) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
   const userId = req.cookies.user_id;
   if (!userId) {
     return res.status(401).json({ error: 'Not authenticated' });
@@ -105,7 +112,7 @@ const authenticateUser = async (req, res, next) => {
 };
 
 // Routes
-app.get('/api/check-auth', authenticateUser, (req, res) => {
+app.get('/api/checkAuth', authenticateUser, (req, res) => {
   res.status(200).json({ authenticated: true });
 });
 
@@ -191,7 +198,7 @@ app.get('/auth/github/callback', async (req, res) => {
         maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
       });
 
-      res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+      res.json({ success: true });
     } finally {
       client.release();
     }
@@ -219,12 +226,13 @@ app.post('/api/user/verify', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/github/login', (req, res) => {
+// app installation
+app.get('/api/github/login',authenticateUser, (req, res) => {
   const githubAuthUrl = `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new`;
   res.json({ url: githubAuthUrl });
 });
 
-app.get('/api/github/callback', async (req, res) => {
+app.get('/api/github/callback',authenticateUser, async (req, res) => {
   const { installation_id } = req.query;
 
   if (!installation_id) {
@@ -234,7 +242,11 @@ app.get('/api/github/callback', async (req, res) => {
   let client;
   try {
     client = await pool.connect();
-
+    const result = await client.query('SELECT github_installation_id  FROM users WHERE github_id = $1', [req.cookies.user_id]);
+    if(result.rows[0].github_installation_id === installation_id) {
+      return res.status(200).json({ success: true });
+    }
+    
     const appOctokit = new Octokit({
       authStrategy: createAppAuth,
       auth: {
@@ -251,7 +263,7 @@ app.get('/api/github/callback', async (req, res) => {
       [installation_id, installation.account.id]
     );
 
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+    res.json({ success: true });
   } catch (error) {
     console.error('Error in GitHub callback:', error);
     res.status(500).json({ error: 'Failed to update GitHub installation' });
@@ -262,35 +274,7 @@ app.get('/api/github/callback', async (req, res) => {
   }
 });
 
-app.post('/api/refresh-token', authenticateUser, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { data } = await gitHubApp.createInstallationAccessToken({
-      installation_id: req.user.id
-    });
-    const newAccessToken = data.token;
-
-    await client.query(
-      'UPDATE users SET github_installation_id = $1 WHERE github_id = $2',
-      [newAccessToken, req.user.id]
-    );
-
-    res.cookie('github_token', newAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 3600000 // 1 hour
-    });
-
-    res.json({ message: 'Token refreshed successfully' });
-  } catch (error) {
-    console.error('Error refreshing token:', error);
-    res.status(500).json({ error: 'Failed to refresh token' });
-  } finally {
-    client.release();
-  }
-});
-
-app.get('/api/bounties', authenticateUser, async (req, res) => {
+app.get('/api/created_bounties', authenticateUser, async (req, res) => {
   const client = await pool.connect();
   try {
     const result = await client.query('SELECT * FROM bounties WHERE creator_id = $1', [req.user.id]);
@@ -320,7 +304,7 @@ app.get('/api/user/details', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/user/solana-address', authenticateUser, async (req, res) => {
+app.post('/api/user/set_solana-address', authenticateUser, async (req, res) => {
   const client = await pool.connect();
   try {
     const { solanaAddress } = req.body;
@@ -408,19 +392,6 @@ app.post('/api/approve-bounty', authenticateUser, async (req, res) => {
     client.release();
   }
 });
-
-// Helper functions
-async function exchangeCodeForToken(code, installationId) {
-  try {
-    const { data } = await gitHubApp.createInstallationAccessToken({
-      installation_id: installationId
-    });
-    return data.token;
-  } catch (error) {
-    console.error('Error exchanging code for token:', error);
-    throw new Error('Failed to exchange code for token');
-  }
-}
 
 function extractBountyIdFromDescription(description) {
   const match = description.match(/bounty\s+(\d+)/i);

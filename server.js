@@ -145,7 +145,7 @@ app.get("/auth/github", (req, res) => {
     scopes.join(" ")
   )}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
-  res.redirect(authUrl);
+  res.json({authUrl});
 });
 
 app.get("/auth/github/callback", async (req, res) => {
@@ -216,7 +216,7 @@ app.get("/auth/github/callback", async (req, res) => {
         personal_access_token = EXCLUDED.personal_access_token,
         expiry_date = EXCLUDED.expiry_date,
         refresh_token = EXCLUDED.refresh_token,
-        refresh_token_expiry_date = EXCLUDED.refresh_token_expiry_date
+        refresh_token_expiry_date = EXCLUDED.refresh_token_expiry_date,
         is_active= EXCLUDED.is_active,
         authorization_revoked= EXCLUDED.authorization_revoked
       `,
@@ -294,7 +294,7 @@ app.post("/api/user/verify", authenticateUser, async (req, res) => {
 // app installation
 app.get("/api/github/login", authenticateUser, (req, res) => {
   const githubAuthUrl = `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new`;
-  res.redirect(githubAuthUrl);
+  res.json({githubAuthUrl});
 });
 
 app.get("/api/github/callback", authenticateUser, async (req, res) => {

@@ -118,7 +118,7 @@ const authenticateUser = async (req, res, next) => {
       }
 
       // Check if the access token is expired
-      if (new Date() > new Date(user.expiry_date)) {
+      if (user &&new Date() > new Date(user.expiry_date)) {
         // Refresh the access token
         const newAccessToken = await refreshGitHubToken(userId);
         user = { ...user, personal_access_token: newAccessToken };

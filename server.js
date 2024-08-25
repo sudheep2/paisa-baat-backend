@@ -592,7 +592,7 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
       [req.user.github_id]
     );
     if (result.rows.length > 0) {
-      res.json(result.rows[0]);
+      res.json({name: result.rows[0].name, email: result.rows[0].email});
     } else {
       res.status(404).json({ error: "User not found" });
     }

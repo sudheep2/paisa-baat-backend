@@ -113,12 +113,16 @@ const authenticateUser = async (req, res, next) => {
       );
       let user = result.rows[0];
 
+      if(!user) {
+        return res.status(401).json({ error: "User not found" });
+      }
+
       if (user?.authorization_revoked) {
         return res.status(401).json({ error: "Authorization revoked" });
       }
 
       // Check if the access token is expired
-      if (user &&new Date() > new Date(user.expiry_date)) {
+      if (user && new Date() > new Date(user.expiry_date)) {
         // Refresh the access token
         const newAccessToken = await refreshGitHubToken(userId);
         user = { ...user, personal_access_token: newAccessToken };

@@ -630,6 +630,8 @@ app.post("/api/github/webhooks", async (req, res) => {
       }
     }
 
+    console.log(`Received ${event} webhook with payload:`, payload);
+
     if (event === "issue_comment" && payload.action === "created") {
       const comment = payload.comment.body;
       if (comment.startsWith("/create-bounty")) {

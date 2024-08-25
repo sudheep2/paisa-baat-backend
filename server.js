@@ -547,12 +547,19 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
     await client.query("COMMIT");
 
     // Notify claimants
-    const octokit = await gitHubApp.getInstallationOctokit(
-      req.user.github_installation_id
-    );
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.GITHUB_APP_ID,
+        privateKey: process.env.GITHUB_PRIVATE_KEY,
+        installationId:  req.user.github_installation_id,
+      },
+    });
+
+   
     for (const claimant of claimants) {
       try {
-        await octokit.issues.createComment({
+        await appOctokit.rest.issues.createComment({
           owner: bounty.repository.split("/")[0],
           repo: bounty.repository.split("/")[1],
           issue_number: bounty.issue_id,
@@ -783,10 +790,16 @@ async function handleBountyCreation(payload) {
     );
     const bountyId = result.rows[0].id;
 
-    const octokit = await gitHubApp.getInstallationOctokit(
-      payload.installation.id
-    );
-    await octokit.issues.createComment({
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.GITHUB_APP_ID,
+        privateKey: process.env.GITHUB_PRIVATE_KEY,
+        installationId: payload.installation.id,
+      },
+    });
+
+   await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: payload.issue.number,
@@ -822,10 +835,17 @@ async function handleBountyClaim(payload, bountyIdFromDescription) {
       [userId, "claimed", bounty.id]
     );
 
-    const octokit = await gitHubApp.getInstallationOctokit(
-      payload.installation.id
-    );
-    await octokit.issues.createComment({
+    
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.GITHUB_APP_ID,
+        privateKey: process.env.GITHUB_PRIVATE_KEY,
+        installationId: payload.installation.id,
+      },
+    });
+
+   await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: payload.issue.number,

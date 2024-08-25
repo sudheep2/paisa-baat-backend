@@ -259,7 +259,7 @@ app.get("/api/checkAuth", authenticateUser, (req, res) => {
     .status(200)
     .json({
       authenticated: true,
-      isAppInstalled: req.user.installation_id !== null,
+      isAppInstalled: req.user.github_installation_id !== null,
       aadhaarPanVerified: req.user.aadhaar_pan !== null,
       solanaAddressSet: req.user.solana_address !== null,
     });

@@ -608,11 +608,11 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
 app.post("/api/github/webhooks", async (req, res) => {
   const event = req.headers["x-github-event"];
   const signature = req.headers["x-hub-signature-256"];
-  const body = await req.text();
+  const body = req.body
 
   try {
     await gitHubApp.webhooks.verify(body, signature);
-    const payload = JSON.parse(body);
+    const payload = body;
 
     if (event === "installation" && payload.action === "deleted") {
       const githubId = payload.sender.id;

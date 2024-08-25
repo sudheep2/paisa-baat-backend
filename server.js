@@ -757,11 +757,11 @@ const refreshGitHubToken = async (userId) => {
 
 function extractBountyIdFromDescription(description) {
   const match = description.match(/bounty\s+(\d+)/i);
-  return match ? parseInt(match[1], 10) : null;
+  return match ? parseInt(match[1], 100000) : null;
 }
 
 async function handleBountyCreation(payload) {
-  const [, amount] = payload.comment.body.split(" ");
+  const amount = extractBountyIdFromDescription(payload.issue.body);
   const issueId = payload.issue.id;
   const userId = payload.comment.user.id;
 

@@ -759,7 +759,7 @@ function extractBountyIdFromDescription(description) {
 }
 
 async function handleBountyCreation(payload) {
-  const amount = extractBountyIdFromDescription(payload.issue.body);
+  const amount = extractBountyIdFromDescription(payload.comment.body);
   const issueId = payload.issue.id;
   const userId = payload.comment.user.id;
   console.log("Creating bounty for issue:", issueId, "with amount:", amount);

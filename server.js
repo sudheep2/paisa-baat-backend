@@ -68,7 +68,7 @@ async function setupDatabase() {
 
       CREATE TABLE IF NOT EXISTS bounties (
         id SERIAL PRIMARY KEY,
-        issue_id INTEGER NOT NULL,
+        issue_id NUMERIC NOT NULL,
         amount NUMERIC NOT NULL,
         status TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -113,7 +113,7 @@ const authenticateUser = async (req, res, next) => {
       );
       let user = result.rows[0];
 
-      if (user.authorization_revoked) {
+      if (user?.authorization_revoked) {
         return res.status(401).json({ error: "Authorization revoked" });
       }
 

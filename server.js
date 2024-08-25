@@ -44,8 +44,9 @@ const pool = new Pool({
 
 // Database setup
 async function setupDatabase() {
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -54,7 +55,7 @@ async function setupDatabase() {
         total_earnings NUMERIC DEFAULT 0,
         aadhaar_pan TEXT,
         is_verified BOOLEAN DEFAULT FALSE,
-        is_active BOOLEAN ,
+        is_active BOOLEAN,
         authorization_revoked BOOLEAN,
         email TEXT,
         name TEXT,
@@ -80,18 +81,19 @@ async function setupDatabase() {
       );
 
       CREATE TABLE IF NOT EXISTS bounty_claims (
-      id SERIAL PRIMARY KEY,
-      bounty_id INTEGER REFERENCES bounties(id),
-      user_id INTEGER REFERENCES users(github_id),
-      claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id SERIAL PRIMARY KEY,
+        bounty_id INTEGER REFERENCES bounties(id),
+        user_id INTEGER REFERENCES users(github_id),
+        claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-
     `);
     console.log("Database setup complete");
   } catch (err) {
     console.error("Error setting up database:", err);
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 }
 
@@ -99,40 +101,33 @@ setupDatabase();
 
 // Middleware for authentication
 const authenticateUser = async (req, res, next) => {
-  if (!req.cookies || !req.cookies.user_id) {
+  const userId = req.cookies?.user_id;
+  if (!userId) {
     return res.status(401).json({ error: "Not authenticated" });
   }
-  const userId = req.cookies.user_id;
 
   try {
-    const client = await pool.connect();
-    try {
-      let result = await client.query(
-        "SELECT * FROM users WHERE github_id = $1",
-        [userId]
-      );
-      let user = result.rows[0];
+    const result = await pool.query(
+      "SELECT * FROM users WHERE github_id = $1",
+      [userId]
+    );
+    const user = result.rows[0];
 
-      if(!user) {
-        return res.status(401).json({ error: "User not found" });
-      }
-
-      if (user?.authorization_revoked) {
-        return res.status(401).json({ error: "Authorization revoked" });
-      }
-
-      // Check if the access token is expired
-      if (user && new Date() > new Date(user.expiry_date)) {
-        // Refresh the access token
-        const newAccessToken = await refreshGitHubToken(userId);
-        user = { ...user, personal_access_token: newAccessToken };
-      }
-
-      req.user = user;
-      next();
-    } finally {
-      client.release();
+    if (!user || user.authorization_revoked) {
+      return res
+        .status(401)
+        .json({ error: "User not found or authorization revoked" });
     }
+
+    // Check if the access token is expired
+    if (new Date() > new Date(user.expiry_date)) {
+      // Refresh the access token
+      const newAccessToken = await refreshGitHubToken(userId);
+      user.personal_access_token = newAccessToken;
+    }
+
+    req.user = user;
+    next();
   } catch (error) {
     console.error("Authentication error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -183,93 +178,77 @@ app.get("/auth/github/callback", async (req, res) => {
     } = accessTokenResponse.data;
 
     // Fetch user details
-    const userResponse = await axios.get("https://api.github.com/user", {
+    const { data: user } = await axios.get("https://api.github.com/user", {
       headers: {
         Authorization: `Bearer ${access_token}`,
       },
     });
 
-    // Fetch user emails
-    const emailResponse = await axios.get(
-      "https://api.github.com/user/emails",
-      {
+    // Get primary email
+    const primaryEmail = (
+      await axios.get("https://api.github.com/user/emails", {
         headers: {
           Authorization: `Bearer ${access_token}`,
         },
-      }
+      })
+    ).data.find((email) => email.primary)?.email;
+
+    // Insert or update user in the database
+    await pool.query(
+      `
+      INSERT INTO users (github_id, name, email, personal_access_token, expiry_date, refresh_token, refresh_token_expiry_date, is_active, authorization_revoked)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (github_id) DO UPDATE SET
+      name = EXCLUDED.name,
+      email = EXCLUDED.email,
+      personal_access_token = EXCLUDED.personal_access_token,
+      expiry_date = EXCLUDED.expiry_date,
+      refresh_token = EXCLUDED.refresh_token,
+      refresh_token_expiry_date = EXCLUDED.refresh_token_expiry_date,
+      is_active = EXCLUDED.is_active,
+      authorization_revoked = EXCLUDED.authorization_revoked
+    `,
+      [
+        user.id,
+        user.login,
+        primaryEmail,
+        access_token,
+        new Date(Date.now() + expires_in * 1000),
+        refresh_token,
+        new Date(Date.now() + refresh_token_expires_in * 1000),
+        true,
+        false,
+      ]
     );
 
-    const user = userResponse.data;
-    const emails = emailResponse.data;
+    res.cookie("user_id", user.id, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    });
 
-    // Get primary email
-    const primaryEmail =
-      emails.find((email) => email.primary)?.email || emails[0]?.email;
-
-    let client = await pool.connect();
-
-    try {
-      // Insert or update user in the database
-      await client.query(
-        `
-        INSERT INTO users (github_id, name, email, personal_access_token, expiry_date, refresh_token, refresh_token_expiry_date,is_active,authorization_revoked)
-        VALUES ($1, $2, $3, $4, $5, $6, $7,$8,$9)
-        ON CONFLICT (github_id) DO UPDATE SET
-        name = EXCLUDED.name,
-        email = EXCLUDED.email,
-        personal_access_token = EXCLUDED.personal_access_token,
-        expiry_date = EXCLUDED.expiry_date,
-        refresh_token = EXCLUDED.refresh_token,
-        refresh_token_expiry_date = EXCLUDED.refresh_token_expiry_date,
-        is_active= EXCLUDED.is_active,
-        authorization_revoked= EXCLUDED.authorization_revoked
-      `,
-        [
-          user.id,
-          user.login,
-          primaryEmail,
-          access_token,
-          new Date(Date.now() + expires_in * 1000),
-          refresh_token,
-          new Date(Date.now() + refresh_token_expires_in * 1000),
-          true,
-          false,
-        ]
-      );
-
-      res.cookie("user_id", user.id, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      });
-
-      res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    res.json({ success: true });
   } catch (error) {
-    console.error(error);
-    res.status(500).send("Error during authentication");
+    console.error("Error during authentication:", error);
+    res.status(500).json({ error: "Error during authentication" });
   }
 });
 
 app.get("/api/checkAuth", authenticateUser, (req, res) => {
-  res
-    .status(200)
-    .json({
-      authenticated: true,
-      isAppInstalled: req.user.github_installation_id !== null,
-      aadhaarPanVerified: req.user.aadhaar_pan !== null,
-      solanaAddressSet: req.user.solana_address !== null,
-    });
+  res.status(200).json({
+    authenticated: true,
+    isAppInstalled: req.user.github_installation_id !== null,
+    aadhaarPanVerified: req.user.aadhaar_pan !== null,
+    solanaAddressSet: req.user.solana_address !== null,
+  });
 });
 
 app.post("/api/user/verify", authenticateUser, async (req, res) => {
   const client = await pool.connect();
   try {
     const { aadhaarPan } = req.body;
-    const isVerified = await verifyAadhaarPan(aadhaarPan, req.cookies.user_id);
+    const isVerified = await verifyAadhaarPan(aadhaarPan, req.user.github_id);
     if (isVerified) {
       res.json({ message: "Verification successful" });
     } else {
@@ -296,13 +275,18 @@ app.get("/api/github/callback", authenticateUser, async (req, res) => {
     return res.status(400).json({ error: "Invalid installation_id provided" });
   }
 
-  let client;
+  const client = await pool.connect();
   try {
-    client = await pool.connect();
     const result = await client.query(
-      "SELECT github_installation_id  FROM users WHERE github_id = $1",
-      [req.cookies.user_id]
+      `
+        SELECT github_installation_id
+        FROM users
+        WHERE github_id = $1
+        FOR UPDATE
+      `,
+      [req.user.github_id]
     );
+
     if (
       setup_action !== "update" &&
       result.rows[0].github_installation_id === installation_id
@@ -324,7 +308,11 @@ app.get("/api/github/callback", authenticateUser, async (req, res) => {
 
     // Update the user's github_installation_id in the database
     await client.query(
-      "UPDATE users SET github_installation_id = $1 WHERE github_id = $2",
+      `
+        UPDATE users
+        SET github_installation_id = $1
+        WHERE github_id = $2
+      `,
       [installation_id, installation.account.id]
     );
 
@@ -333,9 +321,7 @@ app.get("/api/github/callback", authenticateUser, async (req, res) => {
     console.error("Error in GitHub callback:", error);
     res.status(500).json({ error: "Failed to update GitHub installation" });
   } finally {
-    if (client) {
-      client.release();
-    }
+    client.release();
   }
 });
 
@@ -345,7 +331,7 @@ app.post("/api/user/set_solana-address", authenticateUser, async (req, res) => {
     const { solanaAddress } = req.body;
     await client.query(
       "UPDATE users SET solana_address = $1 WHERE github_id = $2",
-      [solanaAddress, req.cookies.user_id]
+      [solanaAddress, req.user.github_id]
     );
     res.json({ message: "Solana address connected" });
   } catch (error) {
@@ -552,11 +538,10 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
       auth: {
         appId: process.env.GITHUB_APP_ID,
         privateKey: process.env.GITHUB_PRIVATE_KEY,
-        installationId:  req.user.github_installation_id,
+        installationId: req.user.github_installation_id,
       },
     });
 
-   
     for (const claimant of claimants) {
       try {
         await appOctokit.rest.issues.createComment({
@@ -584,9 +569,12 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
 app.post("/api/complete-bounty", authenticateUser, async (req, res) => {
   const { bountyId } = req.body;
   const client = await pool.connect();
-  
+
   try {
-    await client.query('UPDATE bounties SET status = $1 WHERE id = $2', ['completed', bountyId]);
+    await client.query("UPDATE bounties SET status = $1 WHERE id = $2", [
+      "completed",
+      bountyId,
+    ]);
     res.json({ message: "Bounty completed successfully" });
   } catch (error) {
     console.error("Error completing bounty:", error);
@@ -604,7 +592,7 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
       [req.user.github_id]
     );
     if (result.rows.length > 0) {
-      res.json({name: result.rows[0].name, email: result.rows[0].email});
+      res.json({ name: result.rows[0].name, email: result.rows[0].email });
     } else {
       res.status(404).json({ error: "User not found" });
     }
@@ -619,7 +607,7 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
 app.post("/api/github/webhooks", async (req, res) => {
   const event = req.headers["x-github-event"];
   const signature = req.headers["x-hub-signature-256"];
-  const body = req.body
+  const body = req.body;
 
   try {
     await gitHubApp.webhooks.verify(body, signature);
@@ -799,7 +787,7 @@ async function handleBountyCreation(payload) {
       },
     });
 
-   await appOctokit.rest.issues.createComment({
+    await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: payload.issue.number,
@@ -835,7 +823,6 @@ async function handleBountyClaim(payload, bountyIdFromDescription) {
       [userId, "claimed", bounty.id]
     );
 
-    
     const appOctokit = new Octokit({
       authStrategy: createAppAuth,
       auth: {
@@ -845,7 +832,7 @@ async function handleBountyClaim(payload, bountyIdFromDescription) {
       },
     });
 
-   await appOctokit.rest.issues.createComment({
+    await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: payload.issue.number,
@@ -879,6 +866,11 @@ async function verifyAadhaarPan(aadhaarPan, userId) {
     client.release();
   }
 }
+
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: "Something went wrong!" });
+});
 
 app.listen(PORT, () => {
   console.log(`Server is running at ${PORT}`);

@@ -145,7 +145,7 @@ app.get("/auth/github", (req, res) => {
     scopes.join(" ")
   )}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
-  res.json({authUrl});
+  res.json({ authUrl });
 });
 
 app.get("/auth/github/callback", async (req, res) => {
@@ -250,27 +250,14 @@ app.get("/auth/github/callback", async (req, res) => {
 });
 
 app.get("/api/checkAuth", authenticateUser, (req, res) => {
-  res.status(200).json({ authenticated: true });
-});
-
-app.get("/api/user/checkAadhaarPan", authenticateUser, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(
-      "SELECT aadhaar_pan  FROM users WHERE github_id = $1",
-      [req.cookies.user_id]
-    );
-    if (result.rows[0].aadhaar_pan) {
-      res.json({ valueSet: true });
-    } else {
-      res.json({ valueSet: false });
-    }
-  } catch (error) {
-    console.error("Error verifying Aadhaar/PAN:", error);
-    res.status(500).json({ error: "Failed to verify Aadhaar/PAN" });
-  } finally {
-    client.release();
-  }
+  res
+    .status(200)
+    .json({
+      authenticated: true,
+      isAppInstalled: req.user.installation_id !== null,
+      aadhaarPanVerified: req.user.aadhaar_pan !== null,
+      solanaAddressSet: req.user.solana_address !== null,
+    });
 });
 
 app.post("/api/user/verify", authenticateUser, async (req, res) => {
@@ -294,7 +281,7 @@ app.post("/api/user/verify", authenticateUser, async (req, res) => {
 // app installation
 app.get("/api/github/login", authenticateUser, (req, res) => {
   const githubAuthUrl = `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new`;
-  res.json({githubAuthUrl});
+  res.json({ githubAuthUrl });
 });
 
 app.get("/api/github/callback", authenticateUser, async (req, res) => {
@@ -380,10 +367,11 @@ app.get("/api/created_bounties", authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/user/bounties-to-approve', authenticateUser, async (req, res) => {
+app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
   const client = await pool.connect();
   try {
-    const result = await client.query(`
+    const result = await client.query(
+      `
       WITH user_bounties AS (
         SELECT id FROM bounties WHERE creator_id = $1 AND status = 'open'
       )
@@ -406,12 +394,14 @@ app.get('/api/user/bounties-to-approve', authenticateUser, async (req, res) => {
       LEFT JOIN users u ON bc.user_id = u.github_id
       GROUP BY b.id, b.issue_id, b.amount, b.repository, b.issue_title, b.issue_url
       ORDER BY b.created_at DESC
-    `, [req.user.github_id]);
-    
+    `,
+      [req.user.github_id]
+    );
+
     res.json(result.rows);
   } catch (error) {
-    console.error('Error fetching bounties to approve:', error);
-    res.status(500).json({ error: 'Failed to fetch bounties to approve' });
+    console.error("Error fetching bounties to approve:", error);
+    res.status(500).json({ error: "Failed to fetch bounties to approve" });
   } finally {
     client.release();
   }
@@ -479,10 +469,11 @@ app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/user/claimed-bounties', authenticateUser, async (req, res) => {
+app.get("/api/user/claimed-bounties", authenticateUser, async (req, res) => {
   const client = await pool.connect();
   try {
-    const result = await client.query(`
+    const result = await client.query(
+      `
       SELECT 
         b.id AS bounty_id,
         b.issue_id,
@@ -501,52 +492,66 @@ app.get('/api/user/claimed-bounties', authenticateUser, async (req, res) => {
       JOIN bounties b ON bc.bounty_id = b.id
       WHERE bc.user_id = $1
       ORDER BY bc.claimed_at DESC
-    `, [req.user.github_id]);
-    
+    `,
+      [req.user.github_id]
+    );
+
     res.json(result.rows);
   } catch (error) {
-    console.error('Error fetching claimed bounties:', error);
-    res.status(500).json({ error: 'Failed to fetch claimed bounties' });
+    console.error("Error fetching claimed bounties:", error);
+    res.status(500).json({ error: "Failed to fetch claimed bounties" });
   } finally {
     client.release();
   }
 });
 
-app.delete('/api/bounty/:id', authenticateUser, async (req, res) => {
+app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
   const bountyId = req.params.id;
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query("BEGIN");
 
     // Check if the bounty exists and the user is the owner
-    const bountyResult = await client.query('SELECT * FROM bounties WHERE id = $1 AND creator_id = $2', [bountyId, req.user.github_id]);
+    const bountyResult = await client.query(
+      "SELECT * FROM bounties WHERE id = $1 AND creator_id = $2",
+      [bountyId, req.user.github_id]
+    );
     if (bountyResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Bounty not found or you are not the owner' });
+      await client.query("ROLLBACK");
+      return res
+        .status(404)
+        .json({ error: "Bounty not found or you are not the owner" });
     }
     const bounty = bountyResult.rows[0];
 
     // Get all claimants
-    const claimantsResult = await client.query('SELECT DISTINCT user_id FROM bounty_claims WHERE bounty_id = $1', [bountyId]);
+    const claimantsResult = await client.query(
+      "SELECT DISTINCT user_id FROM bounty_claims WHERE bounty_id = $1",
+      [bountyId]
+    );
     const claimants = claimantsResult.rows;
 
     // Delete bounty claims
-    await client.query('DELETE FROM bounty_claims WHERE bounty_id = $1', [bountyId]);
+    await client.query("DELETE FROM bounty_claims WHERE bounty_id = $1", [
+      bountyId,
+    ]);
 
     // Delete the bounty
-    await client.query('DELETE FROM bounties WHERE id = $1', [bountyId]);
+    await client.query("DELETE FROM bounties WHERE id = $1", [bountyId]);
 
-    await client.query('COMMIT');
+    await client.query("COMMIT");
 
     // Notify claimants
-    const octokit = await gitHubApp.getInstallationOctokit(req.user.github_installation_id);
+    const octokit = await gitHubApp.getInstallationOctokit(
+      req.user.github_installation_id
+    );
     for (const claimant of claimants) {
       try {
         await octokit.issues.createComment({
-          owner: bounty.repository.split('/')[0],
-          repo: bounty.repository.split('/')[1],
+          owner: bounty.repository.split("/")[0],
+          repo: bounty.repository.split("/")[1],
           issue_number: bounty.issue_id,
-          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`
+          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`,
         });
       } catch (error) {
         console.error(`Error notifying claimant ${claimant.user_id}:`, error);
@@ -554,11 +559,26 @@ app.delete('/api/bounty/:id', authenticateUser, async (req, res) => {
       }
     }
 
-    res.json({ message: 'Bounty deleted successfully and claimants notified' });
+    res.json({ message: "Bounty deleted successfully and claimants notified" });
   } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Error deleting bounty:', error);
-    res.status(500).json({ error: 'Failed to delete bounty' });
+    await client.query("ROLLBACK");
+    console.error("Error deleting bounty:", error);
+    res.status(500).json({ error: "Failed to delete bounty" });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/complete-bounty", authenticateUser, async (req, res) => {
+  const { bountyId } = req.body;
+  const client = await pool.connect();
+  
+  try {
+    await client.query('UPDATE bounties SET status = $1 WHERE id = $2', ['completed', bountyId]);
+    res.json({ message: "Bounty completed successfully" });
+  } catch (error) {
+    console.error("Error completing bounty:", error);
+    res.status(500).json({ error: "Failed to complete bounty" });
   } finally {
     client.release();
   }

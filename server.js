@@ -141,7 +141,6 @@ app.get("/auth/github", (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const scopes = ["user:email", "read:user"];
 
-  
   const authUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(
     scopes.join(" ")
   )}&redirect_uri=${encodeURIComponent(redirectUri)}`;

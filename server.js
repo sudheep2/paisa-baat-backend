@@ -630,8 +630,6 @@ app.post("/api/github/webhooks", async (req, res) => {
       }
     }
 
-    console.log(`Received ${event} webhook with payload:`, payload);
-
     if (event === "issue_comment" && payload.action === "created") {
       const comment = payload.comment.body;
       if (comment.startsWith("/create-bounty")) {
@@ -757,14 +755,14 @@ const refreshGitHubToken = async (userId) => {
 
 function extractBountyIdFromDescription(description) {
   const match = description.match(/bounty\s+(\d+)/i);
-  return match ? parseInt(match[1], 100000) : null;
+  return match ? parseInt(match[1]) : null;
 }
 
 async function handleBountyCreation(payload) {
   const amount = extractBountyIdFromDescription(payload.issue.body);
   const issueId = payload.issue.id;
   const userId = payload.comment.user.id;
-
+  console.log("Creating bounty for issue:", issueId, "with amount:", amount);
   const client = await pool.connect();
   try {
     const result = await client.query(

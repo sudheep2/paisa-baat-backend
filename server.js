@@ -368,7 +368,7 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
         SELECT id FROM bounties WHERE creator_id = $1 AND status = 'open'
       )
       SELECT 
-        b.id AS bounty_id,
+        b.id,
         b.issue_id,
         b.amount,
         b.repository,

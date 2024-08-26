@@ -240,7 +240,7 @@ app.get("/api/checkAuth", authenticateUser, (req, res) => {
     authenticated: true,
     isAppInstalled: req.user.github_installation_id !== null,
     aadhaarPanVerified: req.user.aadhaar_pan !== null,
-    aadhaarPanSet: req.user.aadhaar_pan ,
+    aadhaarPanSet: req.user.aadhaar_pan,
     solanaAddressSet: req.user.solana_address !== null,
   });
 });
@@ -392,10 +392,14 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
     );
 
     // Filter out any null values that might have slipped through
-    const filteredResults = result.rows.map(row => ({
-      ...row,
-      claimants: row.claimants.filter(claimant => claimant.claimant_id !== null)
-    })).filter(row => row.claimants.length > 0);
+    const filteredResults = result.rows
+      .map((row) => ({
+        ...row,
+        claimants: row.claimants.filter(
+          (claimant) => claimant.claimant_id !== null
+        ),
+      }))
+      .filter((row) => row.claimants.length > 0);
 
     res.json(filteredResults);
   } catch (error) {
@@ -626,7 +630,6 @@ app.post("/api/github/webhooks", async (req, res) => {
       const client = await pool.connect();
 
       try {
-        // Handle the uninstallation, e.g., disable user account, clean up data
         await client.query(
           "UPDATE users SET github_installation_id = NULL WHERE github_id = $1",
           [githubId]
@@ -650,19 +653,10 @@ app.post("/api/github/webhooks", async (req, res) => {
         await handleBountyCreation(payload);
       }
     } else if (event === "pull_request") {
-      const bountyIdFromDescription = extractBountyIdFromDescription(
-        payload.pull_request.body
-      );
-
-      if (payload.action === "opened" && bountyIdFromDescription) {
-        await handleBountyClaim(payload, bountyIdFromDescription);
-      } else if (payload.action === "created") {
-        const comment = payload.comment.body;
-        if (comment.startsWith("/claim-bounty")) {
-          await handleBountyClaim(
-            payload,
-            extractBountyIdFromDescription(comment)
-          );
+      if (payload.action === "opened") {
+        const prBody = payload.pull_request.body;
+        if (prBody && prBody.includes("bounty")) {
+          await handleBountyClaim(payload);
         }
       }
     }
@@ -760,16 +754,27 @@ const refreshGitHubToken = async (userId) => {
   }
 };
 
-function extractBountyIdFromDescription(description) {
-  const match = description.match(/bounty\s+(\d+)/i);
-  return match ? parseInt(match[1]) : null;
-}
-
 async function handleBountyCreation(payload) {
-  const amount = extractBountyIdFromDescription(payload.comment.body);
+  let amount;
+  if (payload.comment) {
+    const match = payload.comment.body.match(/\/create-bounty\s+(\d+)/i);
+    amount = match ? parseInt(match[1]) : null;
+  } else if (payload.issue) {
+    const match = payload.issue.body.match(/\/create-bounty\s+(\d+)/i);
+    amount = match ? parseInt(match[1]) : null;
+  }
+
+  if (!amount) {
+    console.log(
+      "No valid bounty amount found in the comment or issue description"
+    );
+    return;
+  }
+
   const issueId = payload.issue.id;
-  const userId = payload.comment.user.id;
+  const userId = payload.sender.id;
   console.log("Creating bounty for issue:", issueId, "with amount:", amount);
+
   const client = await pool.connect();
   try {
     const result = await client.query(
@@ -799,7 +804,12 @@ async function handleBountyCreation(payload) {
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: payload.issue.number,
-      body: `A bounty of ${amount} rupees has been created for this issue. Bounty ID: ${bountyId}`,
+      body: `Congratulations! A bounty of ${amount} rupees has been created for this issue.
+
+1. To claim this bounty, type "/claim-bounty ${bountyId}" somewhere in the body of your PR or in a comment.
+2. To receive payment, you must join Paisa-Baat (${process.env.FRONTEND_URL}) and complete authorization and wallet connection.
+3. Once approved, payment can take up to 3-5 days to complete.
+4. Thank you for contributing to ${payload.repository.full_name}!`,
     });
 
     return bountyId;
@@ -811,24 +821,31 @@ async function handleBountyCreation(payload) {
   }
 }
 
-async function handleBountyClaim(payload, bountyIdFromDescription) {
-  const issueId = payload.issue.number;
-  const userId = payload.comment.user.id;
+async function handleBountyClaim(payload) {
+  let bountyId;
+  if (payload.comment) {
+    // Extract bounty ID from comment
+    const match = payload.comment.body.match(/\/claim-bounty\s+(\d+)/i);
+    bountyId = match ? parseInt(match[1]) : null;
+  } else if (payload.pull_request) {
+    // Extract bounty ID from pull request body
+    const match = payload.pull_request.body.match(/bounty\s+(\d+)/i);
+    bountyId = match ? parseInt(match[1]) : null;
+  }
+
+  if (!bountyId) {
+    console.log("No valid bounty ID found in the comment or pull request body");
+    return;
+  }
+
+  const userId = payload.sender.id;
 
   const client = await pool.connect();
   try {
-    const result = await client.query(
-      "SELECT * FROM bounties WHERE issue_id = $1 AND status = $2",
-      [issueId, "open"]
-    );
-    if (result.rows.length === 0) {
-      return;
-    }
-    const bounty = result.rows[0];
-
-    await client.query(
-      "UPDATE bounties SET claimed_by = $1, status = $2 WHERE id = $3",
-      [userId, "claimed", bounty.id]
+    // Check if the user has an account with us
+    const userResult = await client.query(
+      "SELECT * FROM users WHERE github_id = $1",
+      [userId]
     );
 
     const appOctokit = new Octokit({
@@ -840,11 +857,52 @@ async function handleBountyClaim(payload, bountyIdFromDescription) {
       },
     });
 
+    if (userResult.rows.length === 0) {
+      // User doesn't have an account
+      await appOctokit.rest.issues.createComment({
+        owner: payload.repository.owner.login,
+        repo: payload.repository.name,
+        issue_number: payload.issue
+          ? payload.issue.number
+          : payload.pull_request.number,
+        body: `To claim this bounty, you need to join Paisa-Baat first. Please visit ${process.env.FRONTEND_URL} to create an account and complete the authorization process.`,
+      });
+      return;
+    }
+
+    // User has an account, proceed with claim
+    const bountyResult = await client.query(
+      "SELECT * FROM bounties WHERE id = $1 AND status = $2",
+      [bountyId, "open"]
+    );
+
+    if (bountyResult.rows.length === 0) {
+      await appOctokit.rest.issues.createComment({
+        owner: payload.repository.owner.login,
+        repo: payload.repository.name,
+        issue_number: payload.issue
+          ? payload.issue.number
+          : payload.pull_request.number,
+        body: `Sorry, no open bounty found with ID ${bountyId}.`,
+      });
+      return;
+    }
+
+    const bounty = bountyResult.rows[0];
+
+    // Update the bounty claim in the database
+    await client.query(
+      "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
+      [bounty.id, userId]
+    );
+
     await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
-      issue_number: payload.issue.number,
-      body: `Bounty claimed successfully by user ID: ${userId}`,
+      issue_number: payload.issue
+        ? payload.issue.number
+        : payload.pull_request.number,
+      body: `Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`,
     });
   } catch (error) {
     console.error("Error claiming bounty:", error);
@@ -852,7 +910,6 @@ async function handleBountyClaim(payload, bountyIdFromDescription) {
     client.release();
   }
 }
-
 async function verifyAadhaarPan(aadhaarPan, userId) {
   const client = await pool.connect();
   try {

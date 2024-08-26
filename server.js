@@ -240,6 +240,7 @@ app.get("/api/checkAuth", authenticateUser, (req, res) => {
     authenticated: true,
     isAppInstalled: req.user.github_installation_id !== null,
     aadhaarPanVerified: req.user.aadhaar_pan !== null,
+    aadhaarPanSet: req.user.aadhaar_pan ,
     solanaAddressSet: req.user.solana_address !== null,
   });
 });
@@ -378,18 +379,25 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
           'claimant_name', u.name,
           'claimant_email', u.email,
           'claimed_at', bc.claimed_at
-        )) AS claimants
+        )) FILTER (WHERE u.github_id IS NOT NULL) AS claimants
       FROM user_bounties ub
       JOIN bounties b ON ub.id = b.id
       LEFT JOIN bounty_claims bc ON b.id = bc.bounty_id
       LEFT JOIN users u ON bc.user_id = u.github_id
       GROUP BY b.id, b.issue_id, b.amount, b.repository, b.issue_title, b.issue_url
+      HAVING COUNT(u.github_id) > 0
       ORDER BY b.created_at DESC
     `,
       [req.user.github_id]
     );
 
-    res.json(result.rows);
+    // Filter out any null values that might have slipped through
+    const filteredResults = result.rows.map(row => ({
+      ...row,
+      claimants: row.claimants.filter(claimant => claimant.claimant_id !== null)
+    })).filter(row => row.claimants.length > 0);
+
+    res.json(filteredResults);
   } catch (error) {
     console.error("Error fetching bounties to approve:", error);
     res.status(500).json({ error: "Failed to fetch bounties to approve" });

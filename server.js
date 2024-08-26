@@ -411,10 +411,11 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
 });
 
 app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
-  const { bountyId } = req.body;
+  const { bountyId, claimantId } = req.body; 
   const client = await pool.connect();
 
   try {
+    // 1. Check if the bounty exists
     const bountyResult = await client.query(
       "SELECT * FROM bounties WHERE id = $1",
       [bountyId]
@@ -424,23 +425,29 @@ app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
     }
     const bounty = bountyResult.rows[0];
 
+    // 2. Check if the claimant has claimed this bounty
+    const claimResult = await client.query(
+      "SELECT * FROM bounty_claims WHERE bounty_id = $1 AND user_id = $2",
+      [bountyId, claimantId]
+    );
+    if (claimResult.rows.length === 0) {
+      return res.status(400).json({ error: "Claimant has not claimed this bounty" });
+    }
+
+    // 3. Check if the user is the owner of the bounty
+    if (bounty.creator_id !== req.user.github_id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // 4. Fetch owner and claimant details
     const ownerResult = await client.query(
       "SELECT * FROM users WHERE github_id = $1",
       [bounty.creator_id]
     );
     const claimantResult = await client.query(
       "SELECT * FROM users WHERE github_id = $1",
-      [bounty.claimed_by]
+      [claimantId]
     );
-
-    if (bounty.creator_id !== req.user.github_id) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    if (bounty.claimed_by === bounty.creator_id) {
-      return res
-        .status(400)
-        .json({ error: "you cannot claim your own bounty" });
-    }
 
     if (ownerResult.rows.length === 0 || claimantResult.rows.length === 0) {
       return res.status(400).json({ error: "Owner or claimant not found" });
@@ -449,14 +456,15 @@ app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
     const owner = ownerResult.rows[0];
     const claimant = claimantResult.rows[0];
 
+    // 5. Check if Solana addresses are available
     if (!owner.solana_address || !claimant.solana_address) {
       return res
         .status(400)
         .json({ error: "Solana address of owner or claimant not found" });
     }
 
-    // Update bounty status
-    // await client.query('UPDATE bounties SET status = $1 WHERE id = $2', ['completed', bountyId]);
+    // 6. Update bounty status to 'payment pending'
+    await client.query('UPDATE bounties SET status = $1, claimed_by = $2 WHERE id = $3', ['payment pending', claimantId, bountyId]);
 
     res.json({
       fromWalletAddress: owner.solana_address,

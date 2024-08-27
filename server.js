@@ -263,6 +263,22 @@ app.post("/api/user/verify", authenticateUser, async (req, res) => {
   }
 });
 
+app.post("/api/logout", authenticateUser, async (req, res) => {
+  try {
+    // Clear the user_id cookie
+    res.clearCookie("user_id", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none", 
+    });
+
+    res.json({ message: "Logout successful" });
+  } catch (error) {
+    console.error("Error during logout:", error);
+    res.status(500).json({ error: "Error during logout" });
+  }
+});
+
 // app installation
 app.get("/api/github/login", authenticateUser, (req, res) => {
   const githubAuthUrl = `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new`;

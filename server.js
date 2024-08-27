@@ -224,7 +224,7 @@ app.get("/auth/github/callback", async (req, res) => {
     res.cookie("user_id", user.id, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      // sameSite: "none",
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     });
 
@@ -269,7 +269,7 @@ app.post("/api/logout", authenticateUser, async (req, res) => {
     res.clearCookie("user_id", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none", 
+      // sameSite: "none", 
     });
 
     res.json({ message: "Logout successful" });
@@ -381,7 +381,7 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
     const result = await client.query(
       `
       WITH user_bounties AS (
-        SELECT id FROM bounties WHERE creator_id = $1 AND status = 'open'
+        SELECT id FROM bounties WHERE creator_id = $1 AND (status = 'open' OR status = 'payment pending')
       )
       SELECT 
         b.id,
@@ -390,6 +390,8 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
         b.repository,
         b.issue_title,
         b.issue_url,
+        b.status, 
+        b.claimed_by, 
         json_agg(json_build_object(
           'claimant_id', u.github_id,
           'claimant_name', u.name,
@@ -400,7 +402,7 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
       JOIN bounties b ON ub.id = b.id
       LEFT JOIN bounty_claims bc ON b.id = bc.bounty_id
       LEFT JOIN users u ON bc.user_id = u.github_id
-      GROUP BY b.id, b.issue_id, b.amount, b.repository, b.issue_title, b.issue_url
+      GROUP BY b.id, b.issue_id, b.amount, b.repository, b.issue_title, b.issue_url, b.status, b.claimed_by
       HAVING COUNT(u.github_id) > 0
       ORDER BY b.created_at DESC
     `,
@@ -502,10 +504,10 @@ app.get("/api/user/claimed-bounties", authenticateUser, async (req, res) => {
     const result = await client.query(
       `
       SELECT 
-        b.id AS bounty_id,
+        b.id,
         b.issue_id,
         b.amount,
-        b.status AS bounty_status,
+        b.status,
         b.repository,
         b.issue_title,
         b.issue_url,

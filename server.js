@@ -924,10 +924,12 @@ async function handleBountyClaim(payload) {
     // Extract bounty ID from PR comment
     const match = payload.comment.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
+    console.log("Extracted bounty ID from PR comment:", bountyId);
   } else if (payload.pull_request) {
     // Extract bounty ID from pull request body
     const match = payload.pull_request.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
+    console.log("Extracted bounty ID from pull request body:", bountyId);
   }
 
   if (!bountyId) {
@@ -944,6 +946,7 @@ async function handleBountyClaim(payload) {
       "SELECT * FROM users WHERE github_id = $1",
       [userId]
     );
+    console.log("Checked if user has an account:", userResult.rows.length > 0);
 
     const appOctokit = new Octokit({
       authStrategy: createAppAuth,
@@ -965,6 +968,7 @@ async function handleBountyClaim(payload) {
         path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
         line: 1
       });
+      console.log("Sent message to user to join Paisa-Baat");
       return;
     }
 
@@ -973,6 +977,7 @@ async function handleBountyClaim(payload) {
       "SELECT * FROM bounties WHERE id = $1 AND status = $2",
       [bountyId, "open"]
     );
+    console.log("Checked if bounty is open:", bountyResult.rows.length > 0);
     
     if (bountyResult.rows.length === 0) {
       await appOctokit.rest.pulls.createReviewComment({
@@ -984,6 +989,7 @@ async function handleBountyClaim(payload) {
         path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
         line: 1
       });
+      console.log("Sent message to user that bounty is not open");
       return;
     }
     
@@ -994,6 +1000,7 @@ async function handleBountyClaim(payload) {
       "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
       [bounty.id, userId]
     );
+    console.log("Updated bounty claim in database");
 
     await appOctokit.rest.pulls.createReviewComment({
       owner: payload.repository.owner.login,
@@ -1004,6 +1011,7 @@ async function handleBountyClaim(payload) {
       path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
       line: 1
     });
+    console.log("Sent message to user thanking them for their contribution");
   } catch (error) {
     console.error("Error claiming bounty:", error);
   } finally {

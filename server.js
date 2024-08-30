@@ -5,6 +5,8 @@ const { Octokit } = require("@octokit/rest");
 const { createAppAuth } = require("@octokit/auth-app");
 const cookieParser = require("cookie-parser");
 const axios = require("axios");
+const crypto = require('crypto');
+const { Keypair, Transaction } = require('@solana/web3.js'); // Import Keypair
 const { App } = require("@octokit/app");
 require("dotenv").config();
 
@@ -91,6 +93,11 @@ async function setupDatabase() {
     await client.query(`
       ALTER TABLE bounty_claims 
       ADD COLUMN IF NOT EXISTS pull_request NUMERIC;
+    `);
+    
+    await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS encrypted_private_key TEXT;
     `);
 
     console.log("Database setup complete");
@@ -230,7 +237,7 @@ app.get("/auth/github/callback", async (req, res) => {
     res.cookie("user_id", user.id, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      // sameSite: "none",
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     });
 
@@ -275,7 +282,7 @@ app.post("/api/logout", authenticateUser, async (req, res) => {
     res.clearCookie("user_id", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none", 
+      // sameSite: "none", 
     });
 
     res.json({ message: "Logout successful" });
@@ -647,7 +654,7 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
       [req.user.github_id]
     );
     if (result.rows.length > 0) {
-      res.json({ name: result.rows[0].name, email: result.rows[0].email });
+      res.json({ name: result.rows[0].name, email: result.rows[0].email, solana_address: result.rows[0].solana_address });
     } else {
       res.status(404).json({ error: "User not found" });
     }
@@ -706,6 +713,48 @@ app.post("/api/github/webhooks", async (req, res) => {
   } catch (error) {
     console.error("Error processing webhook:", error);
     res.status(500).json({ error: "Failed to process webhook" });
+  }
+});
+
+app.post('/api/wallet/generate-keypair', authenticateUser, async (req, res) => {
+  try {
+      const keypair = Keypair.generate();
+      const publicKey = keypair.publicKey.toBase58();
+
+      // Encrypt and store the private key in the database
+      const encryptedPrivateKey = encryptPrivateKey(keypair.secretKey);
+      await pool.query(
+          'UPDATE users SET encrypted_private_key = $1 WHERE github_id = $2', 
+          [encryptedPrivateKey, req.user.github_id]
+      );
+
+      res.json({ publicKey });
+  } catch (error) {
+      console.error('Error generating keypair:', error);
+      res.status(500).json({ error: 'Failed to generate keypair' });
+  }
+});
+
+
+app.post('/api/wallet/sign-transaction', authenticateUser, async (req, res) => {
+  try {
+      const { transaction } = req.body;
+
+      // Retrieve and decrypt the user's private key from the database
+      const result = await pool.query(
+          'SELECT encrypted_private_key FROM users WHERE github_id = $1', 
+          [req.user.github_id]
+      );
+      const encryptedPrivateKey = result.rows[0].encrypted_private_key;
+      const privateKey = decryptPrivateKey(encryptedPrivateKey); // Implement your decryption logic
+
+      const keypair = Keypair.fromSecretKey(privateKey);
+      const deserializedTransaction = Transaction.from(transaction);
+      const signedTransaction = await keypair.signTransaction(deserializedTransaction);
+
+      res.json({ signedTransaction: signedTransaction.serialize() });
+  } catch (error) {
+      // ... error handling
   }
 });
 
@@ -972,6 +1021,39 @@ async function verifyAadhaarPan(aadhaarPan, userId) {
   } finally {
     client.release();
   }
+}
+
+// Encryption
+function encryptPrivateKey(privateKey) {
+    const algorithm = 'aes-256-gcm';
+    const key = process.env.ENCRYPTION_KEY; // Store this securely (environment variable, key management system, etc.)
+    const iv = crypto.randomBytes(16); // Initialization vector
+
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    let encrypted = cipher.update(privateKey);
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+
+    return {
+        iv: iv.toString('hex'),
+        encryptedData: encrypted.toString('hex'),
+        authTag: cipher.getAuthTag().toString('hex')
+    };
+}
+
+// Decryption
+function decryptPrivateKey(encryptedData) {
+    const algorithm = 'aes-256-gcm';
+    const key = process.env.ENCRYPTION_KEY;
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    decipher.setAuthTag(authTag);
+
+    let decrypted = decipher.update(Buffer.from(encryptedData.encryptedData, 'hex'));
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+
+    return decrypted;
 }
 
 app.use((err, req, res, next) => {

@@ -696,11 +696,13 @@ app.post("/api/github/webhooks", async (req, res) => {
         await handleBountyCreation(payload);
       } 
     } else if (event === "issues" && payload.action === "opened") {
+      console.log(payload);
       const issueDescription = payload.issue.body;
       if (issueDescription && issueDescription.includes("/create-bounty")) {
         await handleBountyCreation(payload);
       }
     } else if (event === "pull_request") {
+      console.log(payload);
       if (payload.action === "opened") {
         const prBody = payload.pull_request.body;
         if (prBody && prBody.includes("bounty")) {

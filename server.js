@@ -87,6 +87,12 @@ async function setupDatabase() {
         claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    await client.query(`
+      ALTER TABLE bounty_claims 
+      ADD COLUMN IF NOT EXISTS pull_request NUMERIC;
+    `);
+
     console.log("Database setup complete");
   } catch (err) {
     console.error("Error setting up database:", err);
@@ -582,12 +588,23 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
 
     for (const claimant of claimants) {
       try {
-        await appOctokit.rest.issues.createComment({
-          owner: bounty.repository.split("/")[0],
-          repo: bounty.repository.split("/")[1],
-          issue_number: bounty.issue_id,
-          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`,
-        });
+        const prNumber = await client.query(
+          "SELECT pull_request FROM bounty_claims WHERE bounty_id = $1 AND user_id = $2",
+          [bountyId, claimant.user_id]
+        );
+
+        if (prNumber.rows.length > 0) {
+          await appOctokit.rest.issues.createComment({
+            owner: bounty.repository.split("/")[0],
+            repo: bounty.repository.split("/")[1],
+            issue_number: prNumber.rows[0].pull_request, // Comment on the PR
+            body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`,
+          });
+        } else {
+          console.error(
+            `No pull request found for bounty ${bountyId} and claimant ${claimant.user_id}`
+          );
+        }
       } catch (error) {
         console.error(`Error notifying claimant ${claimant.user_id}:`, error);
         // Continue with other notifications even if one fails
@@ -670,9 +687,7 @@ app.post("/api/github/webhooks", async (req, res) => {
       const comment = payload.comment.body;
       if (comment.startsWith("/create-bounty")) {
         await handleBountyCreation(payload);
-      } else if (comment.startsWith("/claim-bounty")) {
-        await handleBountyClaim(payload);
-      }
+      } 
     } else if (event === "issues" && payload.action === "opened") {
       const issueDescription = payload.issue.body;
       if (issueDescription && issueDescription.includes("/create-bounty")) {
@@ -865,6 +880,7 @@ async function handleBountyClaim(payload) {
   }
 
   const userId = payload.sender.id;
+  const pullRequestId = payload.pull_request.number; // Get the pull request number
 
   const client = await pool.connect();
   try {
@@ -916,11 +932,11 @@ async function handleBountyClaim(payload) {
 
     const bounty = bountyResult.rows[0];
 
-    // Update the bounty claim in the database
-    await client.query(
-      "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
-      [bounty.id, userId]
-    );
+   // Update the bounty claim in the database (include pull_request)
+   await client.query(
+    "INSERT INTO bounty_claims (bounty_id, user_id, pull_request) VALUES ($1, $2, $3)",
+    [bounty.id, userId, pullRequestId]
+  );
 
     await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,

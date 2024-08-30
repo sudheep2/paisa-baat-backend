@@ -595,23 +595,12 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
 
     for (const claimant of claimants) {
       try {
-        const prNumber = await client.query(
-          "SELECT pull_request FROM bounty_claims WHERE bounty_id = $1 AND user_id = $2",
-          [bountyId, claimant.user_id]
-        );
-
-        if (prNumber.rows.length > 0) {
-          await appOctokit.rest.issues.createComment({
-            owner: bounty.repository.split("/")[0],
-            repo: bounty.repository.split("/")[1],
-            issue_number: prNumber.rows[0].pull_request, // Comment on the PR
-            body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`,
-          });
-        } else {
-          console.error(
-            `No pull request found for bounty ${bountyId} and claimant ${claimant.user_id}`
-          );
-        }
+        await appOctokit.rest.issues.createComment({
+          owner: bounty.repository.split("/")[0],
+          repo: bounty.repository.split("/")[1],
+          issue_number: bounty.issue_id,
+          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`
+        });
       } catch (error) {
         console.error(`Error notifying claimant ${claimant.user_id}:`, error);
         // Continue with other notifications even if one fails

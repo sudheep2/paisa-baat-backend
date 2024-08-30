@@ -692,25 +692,24 @@ app.post("/api/github/webhooks", async (req, res) => {
 
     if (event === "issue_comment" && payload.action === "created") {
       const comment = payload.comment.body;
-      console.log(comment,"issue_comment");
-      if (comment.startsWith("/create-bounty")) {
-        await handleBountyCreation(payload);
+      if (payload.issue.pull_request) {
+        // This is a comment on a pull request
+        if (comment.startsWith("/claim-bounty")) {
+          await handleBountyClaim(payload);
+        }
+      } else {
+        // This is a comment on an issue
+        if (comment.startsWith("/create-bounty")) {
+          await handleBountyCreation(payload);
+        }
       }
     } else if (event === "issues" && payload.action === "opened") {
       const issueDescription = payload.issue.body;
-      console.log(issueDescription,"issues","opened");
       if (issueDescription && issueDescription.includes("/create-bounty")) {
         await handleBountyCreation(payload);
       }
-    } else if (event === "pull_request_review_comment" && payload.action === "created") {
-      const comment = payload.comment.body;
-      console.log(comment,"pull_request_review_comment","created");
-      if (comment.startsWith("/claim-bounty")) {
-        await handleBountyClaim(payload);
-      }
     } else if (event === "pull_request" && payload.action === "opened") {
       const prBody = payload.pull_request.body;
-      console.log(prBody,"pull_request","opened");
       if (prBody && prBody.includes("/claim-bounty")) {
         await handleBountyClaim(payload);
       }
@@ -920,16 +919,17 @@ async function handleBountyCreation(payload) {
 
 async function handleBountyClaim(payload) {
   let bountyId;
+  let isPRComment = false;
+
   if (payload.comment) {
     // Extract bounty ID from PR comment
     const match = payload.comment.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
-    console.log("Extracted bounty ID from PR comment:", bountyId);
+    isPRComment = true;
   } else if (payload.pull_request) {
     // Extract bounty ID from pull request body
     const match = payload.pull_request.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
-    console.log("Extracted bounty ID from pull request body:", bountyId);
   }
 
   if (!bountyId) {
@@ -946,7 +946,6 @@ async function handleBountyClaim(payload) {
       "SELECT * FROM users WHERE github_id = $1",
       [userId]
     );
-    console.log("Checked if user has an account:", userResult.rows.length > 0);
 
     const appOctokit = new Octokit({
       authStrategy: createAppAuth,
@@ -957,18 +956,30 @@ async function handleBountyClaim(payload) {
       },
     });
 
+    const createComment = async (body) => {
+      if (isPRComment) {
+        await appOctokit.rest.issues.createComment({
+          owner: payload.repository.owner.login,
+          repo: payload.repository.name,
+          issue_number: payload.issue.number,
+          body: body
+        });
+      } else {
+        await appOctokit.rest.pulls.createReviewComment({
+          owner: payload.repository.owner.login,
+          repo: payload.repository.name,
+          pull_number: payload.pull_request.number,
+          body: body,
+          commit_id: payload.pull_request.head.sha,
+          path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
+          line: 1
+        });
+      }
+    };
+
     if (userResult.rows.length === 0) {
       // User doesn't have an account
-      await appOctokit.rest.pulls.createReviewComment({
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
-        pull_number: payload.pull_request.number,
-        body: `To claim this bounty, you need to join Paisa-Baat first. Please visit ${process.env.FRONTEND_URL} to create an account and complete the authorization process.`,
-        commit_id: payload.pull_request.head.sha,
-        path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
-        line: 1
-      });
-      console.log("Sent message to user to join Paisa-Baat");
+      await createComment(`To claim this bounty, you need to join Paisa-Baat first. Please visit ${process.env.FRONTEND_URL} to create an account and complete the authorization process.`);
       return;
     }
 
@@ -977,19 +988,9 @@ async function handleBountyClaim(payload) {
       "SELECT * FROM bounties WHERE id = $1 AND status = $2",
       [bountyId, "open"]
     );
-    console.log("Checked if bounty is open:", bountyResult.rows.length > 0);
     
     if (bountyResult.rows.length === 0) {
-      await appOctokit.rest.pulls.createReviewComment({
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
-        pull_number: payload.pull_request.number,
-        body: `Sorry, no open bounty found with ID ${bountyId}.`,
-        commit_id: payload.pull_request.head.sha,
-        path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
-        line: 1
-      });
-      console.log("Sent message to user that bounty is not open");
+      await createComment(`Sorry, no open bounty found with ID ${bountyId}.`);
       return;
     }
     
@@ -1000,18 +1001,8 @@ async function handleBountyClaim(payload) {
       "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
       [bounty.id, userId]
     );
-    console.log("Updated bounty claim in database");
 
-    await appOctokit.rest.pulls.createReviewComment({
-      owner: payload.repository.owner.login,
-      repo: payload.repository.name,
-      pull_number: payload.pull_request.number,
-      body: `Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`,
-      commit_id: payload.pull_request.head.sha,
-      path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
-      line: 1
-    });
-    console.log("Sent message to user thanking them for their contribution");
+    await createComment(`Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`);
   } catch (error) {
     console.error("Error claiming bounty:", error);
   } finally {

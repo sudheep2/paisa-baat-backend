@@ -692,25 +692,25 @@ app.post("/api/github/webhooks", async (req, res) => {
 
     if (event === "issue_comment" && payload.action === "created") {
       const comment = payload.comment.body;
-      console.log(comment);
+      console.log(comment,"issue_comment");
       if (comment.startsWith("/create-bounty")) {
         await handleBountyCreation(payload);
       }
     } else if (event === "issues" && payload.action === "opened") {
       const issueDescription = payload.issue.body;
-      console.log(issueDescription);
+      console.log(issueDescription,"issues","opened");
       if (issueDescription && issueDescription.includes("/create-bounty")) {
         await handleBountyCreation(payload);
       }
     } else if (event === "pull_request_review_comment" && payload.action === "created") {
       const comment = payload.comment.body;
-      console.log(comment);
+      console.log(comment,"pull_request_review_comment","created");
       if (comment.startsWith("/claim-bounty")) {
         await handleBountyClaim(payload);
       }
     } else if (event === "pull_request" && payload.action === "opened") {
       const prBody = payload.pull_request.body;
-      console.log(prBody);
+      console.log(prBody,"pull_request","opened");
       if (prBody && prBody.includes("/claim-bounty")) {
         await handleBountyClaim(payload);
       }

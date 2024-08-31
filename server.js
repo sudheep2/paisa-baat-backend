@@ -5,8 +5,8 @@ const { Octokit } = require("@octokit/rest");
 const { createAppAuth } = require("@octokit/auth-app");
 const cookieParser = require("cookie-parser");
 const axios = require("axios");
-const crypto = require('crypto');
-const { Keypair, Transaction } = require('@solana/web3.js'); // Import Keypair
+const crypto = require("crypto");
+const { Keypair, Transaction } = require("@solana/web3.js"); // Import Keypair
 const { App } = require("@octokit/app");
 require("dotenv").config();
 
@@ -94,7 +94,7 @@ async function setupDatabase() {
       ALTER TABLE bounty_claims 
       ADD COLUMN IF NOT EXISTS pull_request NUMERIC;
     `);
-    
+
     await client.query(`
       ALTER TABLE users
       ADD COLUMN IF NOT EXISTS encrypted_private_key TEXT;
@@ -282,7 +282,7 @@ app.post("/api/logout", authenticateUser, async (req, res) => {
     res.clearCookie("user_id", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none", 
+      sameSite: "none",
     });
 
     res.json({ message: "Logout successful" });
@@ -442,7 +442,7 @@ app.get("/api/user/bounties-to-approve", authenticateUser, async (req, res) => {
 });
 
 app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
-  const { bountyId, claimantId } = req.body; 
+  const { bountyId, claimantId } = req.body;
   const client = await pool.connect();
 
   try {
@@ -462,7 +462,9 @@ app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
       [bountyId, claimantId]
     );
     if (claimResult.rows.length === 0) {
-      return res.status(400).json({ error: "Claimant has not claimed this bounty" });
+      return res
+        .status(400)
+        .json({ error: "Claimant has not claimed this bounty" });
     }
 
     // 3. Check if the user is the owner of the bounty
@@ -495,7 +497,10 @@ app.post("/api/approve-bounty-verify", authenticateUser, async (req, res) => {
     }
 
     // 6. Update bounty status to 'payment pending'
-    await client.query('UPDATE bounties SET status = $1, claimed_by = $2 WHERE id = $3', ['payment pending', claimantId, bountyId]);
+    await client.query(
+      "UPDATE bounties SET status = $1, claimed_by = $2 WHERE id = $3",
+      ["payment pending", claimantId, bountyId]
+    );
 
     res.json({
       fromWalletAddress: owner.solana_address,
@@ -599,7 +604,7 @@ app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
           owner: bounty.repository.split("/")[0],
           repo: bounty.repository.split("/")[1],
           issue_number: bounty.issue_id,
-          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`
+          body: `@${claimant.user_id} The bounty you claimed (ID: ${bountyId}) has been deleted by the owner.`,
         });
       } catch (error) {
         console.error(`Error notifying claimant ${claimant.user_id}:`, error);
@@ -643,7 +648,11 @@ app.get("/api/user/details", authenticateUser, async (req, res) => {
       [req.user.github_id]
     );
     if (result.rows.length > 0) {
-      res.json({ name: result.rows[0].name, email: result.rows[0].email, solana_address: result.rows[0].solana_address });
+      res.json({
+        name: result.rows[0].name,
+        email: result.rows[0].email,
+        solana_address: result.rows[0].solana_address,
+      });
     } else {
       res.status(404).json({ error: "User not found" });
     }
@@ -711,45 +720,46 @@ app.post("/api/github/webhooks", async (req, res) => {
   }
 });
 
-app.post('/api/wallet/generate-keypair', authenticateUser, async (req, res) => {
+app.post("/api/wallet/generate-keypair", authenticateUser, async (req, res) => {
   try {
-      const keypair = Keypair.generate();
-      const publicKey = keypair.publicKey.toBase58();
+    const keypair = Keypair.generate();
+    const publicKey = keypair.publicKey.toBase58();
 
-      // Encrypt and store the private key in the database
-      const encryptedPrivateKey = encryptPrivateKey(keypair.secretKey);
-      await pool.query(
-          'UPDATE users SET encrypted_private_key = $1 WHERE github_id = $2', 
-          [encryptedPrivateKey, req.user.github_id]
-      );
+    // Encrypt and store the private key in the database
+    const encryptedPrivateKey = encryptPrivateKey(keypair.secretKey);
+    await pool.query(
+      "UPDATE users SET encrypted_private_key = $1 WHERE github_id = $2",
+      [encryptedPrivateKey, req.user.github_id]
+    );
 
-      res.json({ publicKey });
+    res.json({ publicKey });
   } catch (error) {
-      console.error('Error generating keypair:', error);
-      res.status(500).json({ error: 'Failed to generate keypair' });
+    console.error("Error generating keypair:", error);
+    res.status(500).json({ error: "Failed to generate keypair" });
   }
 });
 
-
-app.post('/api/wallet/sign-transaction', authenticateUser, async (req, res) => {
+app.post("/api/wallet/sign-transaction", authenticateUser, async (req, res) => {
   try {
-      const { transaction } = req.body;
+    const { transaction } = req.body;
 
-      // Retrieve and decrypt the user's private key from the database
-      const result = await pool.query(
-          'SELECT encrypted_private_key FROM users WHERE github_id = $1', 
-          [req.user.github_id]
-      );
-      const encryptedPrivateKey = result.rows[0].encrypted_private_key;
-      const privateKey = decryptPrivateKey(encryptedPrivateKey); // Implement your decryption logic
+    // Retrieve and decrypt the user's private key from the database
+    const result = await pool.query(
+      "SELECT encrypted_private_key FROM users WHERE github_id = $1",
+      [req.user.github_id]
+    );
+    const encryptedPrivateKey = result.rows[0].encrypted_private_key;
+    const privateKey = decryptPrivateKey(encryptedPrivateKey); // Implement your decryption logic
 
-      const keypair = Keypair.fromSecretKey(privateKey);
-      const deserializedTransaction = Transaction.from(transaction);
-      const signedTransaction = await keypair.signTransaction(deserializedTransaction);
+    const keypair = Keypair.fromSecretKey(privateKey);
+    const deserializedTransaction = Transaction.from(transaction);
+    const signedTransaction = await keypair.signTransaction(
+      deserializedTransaction
+    );
 
-      res.json({ signedTransaction: signedTransaction.serialize() });
+    res.json({ signedTransaction: signedTransaction.serialize() });
   } catch (error) {
-      // ... error handling
+    // ... error handling
   }
 });
 
@@ -769,15 +779,10 @@ const refreshGitHubToken = async (userId) => {
         UPDATE users SET
           personal_access_token = $1,
           refresh_token = $2,
-          authorization_revoked= $3,
+          authorization_revoked = $3
         WHERE github_id = $4
       `,
-        [
-          NULL,
-          NULL, // Use the new refresh token if provided, otherwise keep the old one
-          true,
-          userId,
-        ]
+        [null, null, true, userId]
       );
 
       throw new Error(
@@ -808,6 +813,13 @@ const refreshGitHubToken = async (userId) => {
       refresh_token_expires_in,
     } = tokenResponse.data;
 
+    // Calculate new expiry dates
+    const now = new Date();
+    const newExpiryDate = new Date(now.getTime() + expires_in * 1000);
+    const newRefreshTokenExpiryDate = refresh_token_expires_in
+      ? new Date(now.getTime() + refresh_token_expires_in * 1000)
+      : new Date(refresh_token_expiry_date); // Keep the old expiry if no new one provided
+
     // Update the tokens and expiry dates in the database
     await client.query(
       `
@@ -820,12 +832,9 @@ const refreshGitHubToken = async (userId) => {
     `,
       [
         access_token,
-        new Date(Date.now() + expires_in * 1000),
+        newExpiryDate,
         new_refresh_token || refresh_token, // Use the new refresh token if provided, otherwise keep the old one
-        new Date(
-          Date.now() +
-            (refresh_token_expires_in * 1000 || refresh_token_expiry_date)
-        ),
+        newRefreshTokenExpiryDate,
         userId,
       ]
     );
@@ -911,18 +920,18 @@ async function handleBountyClaim(payload) {
   let isPRComment = false;
 
   if (payload.comment) {
-    // Extract bounty ID from PR comment
     const match = payload.comment.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
     isPRComment = true;
   } else if (payload.pull_request) {
-    // Extract bounty ID from pull request body
     const match = payload.pull_request.body.match(/\/claim-bounty\s+(\d+)/i);
     bountyId = match ? parseInt(match[1]) : null;
   }
 
   if (!bountyId) {
-    console.log("No valid bounty ID found in the PR comment or pull request body");
+    console.log(
+      "No valid bounty ID found in the PR comment or pull request body"
+    );
     return;
   }
 
@@ -930,7 +939,6 @@ async function handleBountyClaim(payload) {
 
   const client = await pool.connect();
   try {
-    // Check if the user has an account with us
     const userResult = await client.query(
       "SELECT * FROM users WHERE github_id = $1",
       [userId]
@@ -951,7 +959,7 @@ async function handleBountyClaim(payload) {
           owner: payload.repository.owner.login,
           repo: payload.repository.name,
           issue_number: payload.issue.number,
-          body: body
+          body: body,
         });
       } else {
         await appOctokit.rest.pulls.createReviewComment({
@@ -960,38 +968,48 @@ async function handleBountyClaim(payload) {
           pull_number: payload.pull_request.number,
           body: body,
           commit_id: payload.pull_request.head.sha,
-          path: payload.pull_request.changed_files > 0 ? payload.pull_request.changed_files[0].filename : '',
-          line: 1
+          path:
+            payload.pull_request.changed_files > 0
+              ? payload.pull_request.changed_files[0].filename
+              : "",
+          line: 1,
         });
       }
     };
 
     if (userResult.rows.length === 0) {
-      // User doesn't have an account
-      await createComment(`To claim this bounty, you need to join Paisa-Baat first. Please visit ${process.env.FRONTEND_URL} to create an account and complete the authorization process.`);
+      await createComment(
+        `To claim this bounty, you need to join Paisa-Baat first. Please visit ${process.env.FRONTEND_URL} to create an account and complete the authorization process.`
+      );
       return;
     }
 
-    // User has an account, proceed with claim
     const bountyResult = await client.query(
       "SELECT * FROM bounties WHERE id = $1 AND status = $2",
       [bountyId, "open"]
     );
-    
+
     if (bountyResult.rows.length === 0) {
       await createComment(`Sorry, no open bounty found with ID ${bountyId}.`);
       return;
     }
-    
+
     const bounty = bountyResult.rows[0];
 
-    // Update the bounty claim in the database
+    // Check if the claimant is the bounty creator
+    if (bounty.creator_id === userId) {
+      await createComment(`Sorry, you cannot claim your own bounty.`);
+      return;
+    }
+
     await client.query(
       "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
       [bounty.id, userId]
     );
 
-    await createComment(`Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`);
+    await createComment(
+      `Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`
+    );
   } catch (error) {
     console.error("Error claiming bounty:", error);
   } finally {
@@ -1022,35 +1040,37 @@ async function verifyAadhaarPan(aadhaarPan, userId) {
 
 // Encryption
 function encryptPrivateKey(privateKey) {
-    const algorithm = 'aes-256-gcm';
-    const key = process.env.ENCRYPTION_KEY; // Store this securely (environment variable, key management system, etc.)
-    const iv = crypto.randomBytes(16); // Initialization vector
+  const algorithm = "aes-256-gcm";
+  const key = process.env.ENCRYPTION_KEY; // Store this securely (environment variable, key management system, etc.)
+  const iv = crypto.randomBytes(16); // Initialization vector
 
-    const cipher = crypto.createCipheriv(algorithm, key, iv);
-    let encrypted = cipher.update(privateKey);
-    encrypted = Buffer.concat([encrypted, cipher.final()]);
+  const cipher = crypto.createCipheriv(algorithm, key, iv);
+  let encrypted = cipher.update(privateKey);
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
 
-    return {
-        iv: iv.toString('hex'),
-        encryptedData: encrypted.toString('hex'),
-        authTag: cipher.getAuthTag().toString('hex')
-    };
+  return {
+    iv: iv.toString("hex"),
+    encryptedData: encrypted.toString("hex"),
+    authTag: cipher.getAuthTag().toString("hex"),
+  };
 }
 
 // Decryption
 function decryptPrivateKey(encryptedData) {
-    const algorithm = 'aes-256-gcm';
-    const key = process.env.ENCRYPTION_KEY;
-    const iv = Buffer.from(encryptedData.iv, 'hex');
-    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+  const algorithm = "aes-256-gcm";
+  const key = process.env.ENCRYPTION_KEY;
+  const iv = Buffer.from(encryptedData.iv, "hex");
+  const authTag = Buffer.from(encryptedData.authTag, "hex");
 
-    const decipher = crypto.createDecipheriv(algorithm, key, iv);
-    decipher.setAuthTag(authTag);
+  const decipher = crypto.createDecipheriv(algorithm, key, iv);
+  decipher.setAuthTag(authTag);
 
-    let decrypted = decipher.update(Buffer.from(encryptedData.encryptedData, 'hex'));
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
+  let decrypted = decipher.update(
+    Buffer.from(encryptedData.encryptedData, "hex")
+  );
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
 
-    return decrypted;
+  return decrypted;
 }
 
 app.use((err, req, res, next) => {

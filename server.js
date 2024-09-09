@@ -48,10 +48,10 @@ const pool = new Pool({
 async function setupDatabase() {
   let client;
   try {
-      client = await pool.connect();
+    client = await pool.connect();
 
-      // Create tables (if they don't exist)
-      await client.query(`
+    // Create tables (if they don't exist)
+    await client.query(`
           CREATE TABLE IF NOT EXISTS users (
               id SERIAL PRIMARY KEY,
               github_id INTEGER UNIQUE NOT NULL,
@@ -94,8 +94,8 @@ async function setupDatabase() {
           );
       `);
 
-      // Create a helper function to check for unique open bounties
-      await client.query(`
+    // Create a helper function to check for unique open bounties
+    await client.query(`
           CREATE OR REPLACE FUNCTION check_unique_open_bounty() RETURNS TRIGGER AS $$
           BEGIN
               IF (NEW.status = 'open' AND 
@@ -108,16 +108,16 @@ async function setupDatabase() {
           $$ LANGUAGE plpgsql;
       `);
 
-      // Create a trigger to call the helper function on bounties insert/update
-      await client.query(`
+    // Create a trigger to call the helper function on bounties insert/update
+    await client.query(`
           CREATE TRIGGER unique_open_bounty_trigger
           BEFORE INSERT OR UPDATE ON bounties
           FOR EACH ROW
           EXECUTE FUNCTION check_unique_open_bounty();
       `);
 
-      // Create a helper function to check for unique claims on open bounties
-      await client.query(`
+    // Create a helper function to check for unique claims on open bounties
+    await client.query(`
           CREATE OR REPLACE FUNCTION check_unique_claim_on_open_bounty() RETURNS TRIGGER AS $$
           BEGIN
               IF (EXISTS (SELECT 1 FROM bounties 
@@ -133,21 +133,21 @@ async function setupDatabase() {
           $$ LANGUAGE plpgsql;
       `);
 
-      // Create a trigger to call the helper function on bounty_claims insert/update
-      await client.query(`
+    // Create a trigger to call the helper function on bounty_claims insert/update
+    await client.query(`
           CREATE TRIGGER unique_claim_on_open_bounty_trigger
           BEFORE INSERT OR UPDATE ON bounty_claims
           FOR EACH ROW
           EXECUTE FUNCTION check_unique_claim_on_open_bounty();
       `);
 
-      console.log("Database setup complete");
+    console.log("Database setup complete");
   } catch (err) {
-      console.error("Error setting up database:", err);
+    console.error("Error setting up database:", err);
   } finally {
-      if (client) {
-          client.release();
-      }
+    if (client) {
+      client.release();
+    }
   }
 }
 
@@ -595,7 +595,7 @@ app.get("/api/user/claimed-bounties", authenticateUser, async (req, res) => {
 
 app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
   const bountyId = req.params.id;
-  const { amount } = req.body; 
+  const { amount } = req.body;
 
   const client = await pool.connect();
   try {
@@ -605,14 +605,16 @@ app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
       [bountyId, req.user.github_id]
     );
     if (bountyResult.rows.length === 0) {
-      return res.status(404).json({ error: "Bounty not found or you are not the owner" });
+      return res
+        .status(404)
+        .json({ error: "Bounty not found or you are not the owner" });
     }
 
     // Update the bounty amount
-    await client.query(
-      "UPDATE bounties SET amount = $1 WHERE id = $2",
-      [amount, bountyId]
-    );
+    await client.query("UPDATE bounties SET amount = $1 WHERE id = $2", [
+      amount,
+      bountyId,
+    ]);
 
     res.json({ message: "Bounty amount updated successfully" });
   } catch (error) {
@@ -942,12 +944,20 @@ async function handleBountyCreation(payload) {
 
   const client = await pool.connect();
   try {
+
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.GITHUB_APP_ID,
+        privateKey: process.env.GITHUB_PRIVATE_KEY,
+        installationId: payload.installation.id,
+      },
+    });
     // Check for existing open bounty
     const existingBountyResult = await client.query(
       "SELECT * FROM bounties WHERE issue_id = $1 AND status = 'open'",
       [issueId]
     );
-    console.log("Existing bounties:", existingBountyResult.rows);
     if (existingBountyResult.rows.length > 0) {
       // An open bounty already exists for this issue, create a comment
       await appOctokit.rest.issues.createComment({
@@ -972,15 +982,6 @@ async function handleBountyCreation(payload) {
       ]
     );
     const bountyId = result.rows[0].id;
-
-    const appOctokit = new Octokit({
-      authStrategy: createAppAuth,
-      auth: {
-        appId: process.env.GITHUB_APP_ID,
-        privateKey: process.env.GITHUB_PRIVATE_KEY,
-        installationId: payload.installation.id,
-      },
-    });
 
     await appOctokit.rest.issues.createComment({
       owner: payload.repository.owner.login,

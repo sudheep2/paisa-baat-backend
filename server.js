@@ -48,65 +48,106 @@ const pool = new Pool({
 async function setupDatabase() {
   let client;
   try {
-    client = await pool.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        github_id INTEGER UNIQUE NOT NULL,
-        github_installation_id TEXT,
-        total_earnings NUMERIC DEFAULT 0,
-        aadhaar_pan TEXT,
-        is_verified BOOLEAN DEFAULT FALSE,
-        is_active BOOLEAN,
-        authorization_revoked BOOLEAN,
-        email TEXT,
-        name TEXT,
-        personal_access_token TEXT,
-        expiry_date TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        refresh_token TEXT,
-        refresh_token_expiry_date TIMESTAMP,
-        solana_address TEXT
-      );
+      client = await pool.connect();
 
-      CREATE TABLE IF NOT EXISTS bounties (
-        id SERIAL PRIMARY KEY,
-        issue_id NUMERIC NOT NULL,
-        amount NUMERIC NOT NULL,
-        status TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        repository TEXT,
-        issue_title TEXT,
-        issue_url TEXT,
-        creator_id INTEGER REFERENCES users(github_id),
-        claimed_by INTEGER REFERENCES users(github_id)
-      );
+      // Create tables (if they don't exist)
+      await client.query(`
+          CREATE TABLE IF NOT EXISTS users (
+              id SERIAL PRIMARY KEY,
+              github_id INTEGER UNIQUE NOT NULL,
+              github_installation_id TEXT,
+              total_earnings NUMERIC DEFAULT 0,
+              aadhaar_pan TEXT,
+              is_verified BOOLEAN DEFAULT FALSE,
+              is_active BOOLEAN,
+              authorization_revoked BOOLEAN,
+              email TEXT,
+              name TEXT,
+              personal_access_token TEXT,
+              expiry_date TIMESTAMP,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              refresh_token TEXT,
+              refresh_token_expiry_date TIMESTAMP,
+              solana_address TEXT,
+              encrypted_private_key TEXT 
+          );
 
-      CREATE TABLE IF NOT EXISTS bounty_claims (
-        id SERIAL PRIMARY KEY,
-        bounty_id INTEGER REFERENCES bounties(id),
-        user_id INTEGER REFERENCES users(github_id),
-        claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+          CREATE TABLE IF NOT EXISTS bounties (
+              id SERIAL PRIMARY KEY,
+              issue_id NUMERIC NOT NULL,
+              amount NUMERIC NOT NULL,
+              status TEXT NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              repository TEXT,
+              issue_title TEXT,
+              issue_url TEXT,
+              creator_id INTEGER REFERENCES users(github_id),
+              claimed_by INTEGER REFERENCES users(github_id)
+          );
 
-    await client.query(`
-      ALTER TABLE bounty_claims 
-      ADD COLUMN IF NOT EXISTS pull_request NUMERIC;
-    `);
+          CREATE TABLE IF NOT EXISTS bounty_claims (
+              id SERIAL PRIMARY KEY,
+              bounty_id INTEGER REFERENCES bounties(id),
+              user_id INTEGER REFERENCES users(github_id),
+              claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              pull_request NUMERIC
+          );
+      `);
 
-    await client.query(`
-      ALTER TABLE users
-      ADD COLUMN IF NOT EXISTS encrypted_private_key TEXT;
-    `);
+      // Create a helper function to check for unique open bounties
+      await client.query(`
+          CREATE OR REPLACE FUNCTION check_unique_open_bounty() RETURNS TRIGGER AS $$
+          BEGIN
+              IF (NEW.status = 'open' AND 
+                  EXISTS (SELECT 1 FROM bounties 
+                          WHERE issue_id = NEW.issue_id AND id != NEW.id AND status = 'open')) THEN
+                  RAISE EXCEPTION 'An open bounty already exists for this issue.';
+              END IF;
+              RETURN NEW;
+          END;
+          $$ LANGUAGE plpgsql;
+      `);
 
-    console.log("Database setup complete");
+      // Create a trigger to call the helper function on bounties insert/update
+      await client.query(`
+          CREATE TRIGGER unique_open_bounty_trigger
+          BEFORE INSERT OR UPDATE ON bounties
+          FOR EACH ROW
+          EXECUTE FUNCTION check_unique_open_bounty();
+      `);
+
+      // Create a helper function to check for unique claims on open bounties
+      await client.query(`
+          CREATE OR REPLACE FUNCTION check_unique_claim_on_open_bounty() RETURNS TRIGGER AS $$
+          BEGIN
+              IF (EXISTS (SELECT 1 FROM bounties 
+                          WHERE id = NEW.bounty_id AND status = 'open') AND 
+                  EXISTS (SELECT 1 FROM bounty_claims 
+                          WHERE pull_request_number = NEW.pull_request_number 
+                          AND bounty_id IN (SELECT id FROM bounties WHERE status = 'open')
+                          AND id != NEW.id)) THEN
+                  RAISE EXCEPTION 'A claim already exists for this pull request on an open bounty.';
+              END IF;
+              RETURN NEW;
+          END;
+          $$ LANGUAGE plpgsql;
+      `);
+
+      // Create a trigger to call the helper function on bounty_claims insert/update
+      await client.query(`
+          CREATE TRIGGER unique_claim_on_open_bounty_trigger
+          BEFORE INSERT OR UPDATE ON bounty_claims
+          FOR EACH ROW
+          EXECUTE FUNCTION check_unique_claim_on_open_bounty();
+      `);
+
+      console.log("Database setup complete");
   } catch (err) {
-    console.error("Error setting up database:", err);
+      console.error("Error setting up database:", err);
   } finally {
-    if (client) {
-      client.release();
-    }
+      if (client) {
+          client.release();
+      }
   }
 }
 
@@ -871,6 +912,23 @@ async function handleBountyCreation(payload) {
 
   const client = await pool.connect();
   try {
+    // Check for existing open bounty
+    const existingBountyResult = await client.query(
+      "SELECT * FROM bounties WHERE issue_id = $1 AND status = 'open'",
+      [issueId]
+    );
+
+    if (existingBountyResult.rows.length > 0) {
+      // An open bounty already exists for this issue, create a comment
+      await appOctokit.rest.issues.createComment({
+        owner: payload.repository.owner.login,
+        repo: payload.repository.name,
+        issue_number: payload.issue.number,
+        body: `⚠️ An open bounty already exists for this issue. You can only have one active bounty per issue at a time.`,
+      });
+      return;
+    }
+
     const result = await client.query(
       "INSERT INTO bounties (issue_id, amount, status, creator_id, repository, issue_title, issue_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
       [
@@ -1002,16 +1060,25 @@ async function handleBountyClaim(payload) {
       return;
     }
 
+    const pullRequestNumber = payload.pull_request.number;
+
     await client.query(
-      "INSERT INTO bounty_claims (bounty_id, user_id) VALUES ($1, $2)",
-      [bounty.id, userId]
+      "INSERT INTO bounty_claims (bounty_id, user_id, pull_request_number) VALUES ($1, $2, $3)",
+      [bounty.id, userId, pullRequestNumber]
     );
 
     await createComment(
       `Thank you for your contribution! The repo owners/managers will review your code and approve it if deemed correct. In the meantime, you can check out new bounties at ${process.env.FRONTEND_URL}.`
     );
   } catch (error) {
-    console.error("Error claiming bounty:", error);
+    if (error.code === "23505") {
+      // PostgreSQL unique violation error code
+      await createComment(
+        `⚠️ This bounty has already been claimed on another pull request. You can only claim a bounty once per open pull request.`
+      );
+    } else {
+      console.error("Error claiming bounty:", error);
+    }
   } finally {
     client.release();
   }

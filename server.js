@@ -947,7 +947,7 @@ async function handleBountyCreation(payload) {
       "SELECT * FROM bounties WHERE issue_id = $1 AND status = 'open'",
       [issueId]
     );
-
+    console.log("Existing bounties:", existingBountyResult.rows);
     if (existingBountyResult.rows.length > 0) {
       // An open bounty already exists for this issue, create a comment
       await appOctokit.rest.issues.createComment({

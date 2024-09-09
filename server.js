@@ -609,6 +609,9 @@ app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
         .status(404)
         .json({ error: "Bounty not found or you are not the owner" });
     }
+    
+    const bounty = bountyResult.rows[0];
+
     const oldAmount = bounty.amount; 
     const newAmount = req.body.amount;
   
@@ -624,7 +627,6 @@ app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
       [bountyId]
     );
 
-    const bounty = bountyResult.rows[0];
     console.log(`Updating bounty amount from ${oldAmount} to ${newAmount} on issue #${bounty.issue_id}`);
 
     const pullRequestNumbers = pullRequestsResult.rows.map(row => row.pull_request);

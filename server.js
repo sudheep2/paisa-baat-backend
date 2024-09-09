@@ -642,12 +642,18 @@ app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
     console.log(`Updating bounty amount from ${oldAmount} to ${newAmount} on issue #${bounty.issue_id}`);
   
     // Create comment on the issue
-    await appOctokit.rest.issues.createComment({
-      owner: bounty.repository.split("/")[0],
-      repo: bounty.repository.split("/")[1],
-      issue_number: bounty.issue_id,
-      body: `The bounty amount for this issue has been updated from ${oldAmount} to ${newAmount}.`
-    });
+    try {
+      // Create comment on the issue
+      await appOctokit.rest.issues.createComment({
+        owner: bounty.repository.split("/")[0],
+        repo: bounty.repository.split("/")[1],
+        issue_number: bounty.issue_id,
+        body: `The bounty amount for this issue has been updated from ${oldAmount} to ${newAmount}.`
+      });
+    } catch (error) {
+      console.error('Error creating comment on issue:', error);
+      // Handle the error appropriately, e.g., log it, send an error response, or notify the user
+    }
   
     // Create comments on the pull requests
     for (const prNumber of pullRequestNumbers) {

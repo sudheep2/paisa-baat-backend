@@ -593,6 +593,36 @@ app.get("/api/user/claimed-bounties", authenticateUser, async (req, res) => {
   }
 });
 
+app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
+  const bountyId = req.params.id;
+  const { amount } = req.body; 
+
+  const client = await pool.connect();
+  try {
+    // Check if the bounty exists and the user is the owner
+    const bountyResult = await client.query(
+      "SELECT * FROM bounties WHERE id = $1 AND creator_id = $2",
+      [bountyId, req.user.github_id]
+    );
+    if (bountyResult.rows.length === 0) {
+      return res.status(404).json({ error: "Bounty not found or you are not the owner" });
+    }
+
+    // Update the bounty amount
+    await client.query(
+      "UPDATE bounties SET amount = $1 WHERE id = $2",
+      [amount, bountyId]
+    );
+
+    res.json({ message: "Bounty amount updated successfully" });
+  } catch (error) {
+    console.error("Error updating bounty:", error);
+    res.status(500).json({ error: "Failed to update bounty" });
+  } finally {
+    client.release();
+  }
+});
+
 app.delete("/api/bounty/:id", authenticateUser, async (req, res) => {
   const bountyId = req.params.id;
   const client = await pool.connect();

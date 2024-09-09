@@ -609,13 +609,59 @@ app.put("/api/bounty/:id", authenticateUser, async (req, res) => {
         .status(404)
         .json({ error: "Bounty not found or you are not the owner" });
     }
-
+    const oldAmount = bounty.amount; 
+    const newAmount = req.body.amount;
+  
     // Update the bounty amount
-    await client.query("UPDATE bounties SET amount = $1 WHERE id = $2", [
-      amount,
-      bountyId,
-    ]);
+    await client.query(
+      "UPDATE bounties SET amount = $1 WHERE id = $2",
+      [newAmount, bountyId]
+    );
+  
+    // Fetch associated pull requests
+    const pullRequestsResult = await client.query(
+      "SELECT pull_request FROM bounty_claims WHERE bounty_id = $1",
+      [bountyId]
+    );
 
+    const bounty = bountyResult.rows[0];
+    console.log(`Updating bounty amount from ${oldAmount} to ${newAmount} on issue #${bounty.issue_id}`);
+
+    const pullRequestNumbers = pullRequestsResult.rows.map(row => row.pull_request);
+  console.log(`Pull request numbers: ${pullRequestNumbers}`);
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.GITHUB_APP_ID,
+        privateKey: process.env.GITHUB_PRIVATE_KEY,
+        installationId: req.user.github_installation_id,
+      },
+    });
+    console.log(`Updating bounty amount from ${oldAmount} to ${newAmount} on issue #${bounty.issue_id}`);
+  
+    // Create comment on the issue
+    await appOctokit.rest.issues.createComment({
+      owner: bounty.repository.split("/")[0],
+      repo: bounty.repository.split("/")[1],
+      issue_number: bounty.issue_id,
+      body: `The bounty amount for this issue has been updated from ${oldAmount} to ${newAmount}.`
+    });
+  
+    // Create comments on the pull requests
+    for (const prNumber of pullRequestNumbers) {
+      console.log(`Updating bounty amount on PR #${prNumber}`);
+      await appOctokit.rest.pulls.createReviewComment({
+        owner: bounty.repository.split("/")[0],
+        repo: bounty.repository.split("/")[1],
+        pull_number: prNumber,
+        body: `The bounty amount for this issue has been updated from ${oldAmount} to ${newAmount}.`,
+        // You might need to adjust the following based on your PR structure
+        commit_id: 'latest', // Or fetch the latest commit ID for the PR
+        path: '', // Or specify a relevant file path if needed
+        line: 1,
+      });
+    }
+  
     res.json({ message: "Bounty amount updated successfully" });
   } catch (error) {
     console.error("Error updating bounty:", error);
